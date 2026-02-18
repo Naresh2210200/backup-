@@ -1,5 +1,3 @@
-import random
-import string
 import bcrypt
 import re
 from rest_framework import serializers
@@ -10,10 +8,24 @@ from django.db import DEFAULT_DB_ALIAS
 
 class CARegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
+    ca_code = serializers.CharField(
+        required=True,
+        min_length=4,
+        max_length=10,
+        help_text="Your unique CA code (4-10 alphanumeric characters). Share with clients."
+    )
 
     class Meta:
         model = CAFirm
-        fields = ['username', 'email', 'password', 'full_name', 'firm_name', 'gstin', 'address', 'phone']
+        fields = ['ca_code', 'username', 'email', 'password', 'full_name', 'firm_name', 'gstin', 'address', 'phone']
+
+    def validate_ca_code(self, value):
+        value = value.upper().strip()
+        if not re.match(r'^[A-Z0-9]+$', value):
+            raise serializers.ValidationError("CA Code must be alphanumeric only (letters and numbers, no spaces or symbols).")
+        if CAFirm.objects.filter(ca_code=value).exists():
+            raise serializers.ValidationError("This CA Code is already taken. Please choose another.")
+        return value
 
     def validate_username(self, value):
         if CAFirm.objects.filter(username=value).exists():
@@ -27,16 +39,9 @@ class CARegistrationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop('password')
-        while True:
-            code = "CA" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            if not CAFirm.objects.filter(ca_code=code).exists():
-                break
-        
         hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
         ca_firm = CAFirm.objects.create(
             password_hash=hashed_pw,
-            ca_code=code,
             **validated_data
         )
         return ca_firm

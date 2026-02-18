@@ -82,19 +82,14 @@ const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onLogout })
 
     for (const file of fileArr) {
       try {
-        // Step 1: Get presigned URL from Django
-        const { presigned_url, storage_key } = await api.getPresignedUploadUrl(file.name, fy, month);
+        // Step 1: Get presigned URL (or local upload URL) from Django
+        const presignResult = await api.getPresignedUploadUrl(file.name, fy, month);
 
-        // Step 2: PUT file directly to Cloudflare R2
-        const putRes = await fetch(presigned_url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'text/csv' },
-          body: file,
-        });
-        if (!putRes.ok) throw new Error(`R2 upload failed: ${putRes.status}`);
+        // Step 2: Upload file — auto-detects local mode vs R2
+        await api.uploadFile(file, presignResult);
 
         // Step 3: Confirm upload with Django (creates DB record)
-        await api.confirmUpload(storage_key, file.name, fy, month, note);
+        await api.confirmUpload(presignResult.storage_key, file.name, fy, month, note);
         uploaded.push(file.name);
       } catch (err: any) {
         console.error(`Upload failed for ${file.name}:`, err);
@@ -181,8 +176,8 @@ const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onLogout })
 
               <button type="submit" disabled={isUploading || !files}
                 className={`w-full py-3 rounded-lg font-bold text-sm transition-all ${isUploading || !files
-                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                    : 'bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 active:scale-95'
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 active:scale-95'
                   }`}>
                 {isUploading ? (
                   <span className="flex items-center justify-center gap-2">

@@ -126,6 +126,34 @@ export const api = {
     });
   },
 
+  /**
+   * Upload a file to storage.
+   * - local_mode=true  → POST file to Django's local-upload endpoint
+   * - local_mode=false → PUT file directly to R2 presigned URL
+   */
+  async uploadFile(file: File, presignResult: { presigned_url: string; storage_key: string; local_mode?: boolean }) {
+    if (presignResult.local_mode) {
+      // Local dev: POST multipart to Django
+      const token = sessionStorage.getItem('access_token');
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(presignResult.presigned_url, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) throw new Error(`Local upload failed: ${res.status}`);
+      return;
+    }
+    // Production: PUT directly to R2
+    const res = await fetch(presignResult.presigned_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/csv' },
+      body: file,
+    });
+    if (!res.ok) throw new Error(`R2 upload failed: ${res.status}`);
+  },
+
   async confirmUpload(storageKey: string, fileName: string, financialYear: string, month: string, note: string) {
     return request('/api/uploads/confirm/', {
       method: 'POST',
