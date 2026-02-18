@@ -302,13 +302,17 @@ def append_data_to_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str,
             # Normalize whitespace
             headers[str(cell.value).strip()] = cell.column
             
-    # 2. Find Start Row
-    start_row = ws.max_row + 1
-    # Ensure we aren't appending after empty rows
-    for r in range(ws.max_row, 1, -1):
-        # Check if row is empty
-        is_empty = all(ws.cell(row=r, column=c).value is None for c in range(1, ws.max_column + 1))
-        if not is_empty:
+    # 2. Find Real Start Row (ignoring empty formatted rows)
+    start_row = 1
+    # Iterate backwards from max_row down to 1
+    for r in range(ws.max_row, 0, -1):
+        has_data = False
+        for c in range(1, ws.max_column + 1):
+            val = ws.cell(row=r, column=c).value
+            if val is not None and str(val).strip() != "":
+                has_data = True
+                break
+        if has_data:
             start_row = r + 1
             break
             
