@@ -71,13 +71,14 @@ DATABASES = {
 }
 
 # ── REST Framework ────────────────────────────────────────────────────────────
+# We handle JWT auth manually via get_current_user_payload() in each view.
+# DRF's JWTAuthentication is disabled because it tries to look up user_id in
+# Django's auth_user table (integer PK) but our users use UUID PKs → crash.
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ),
-    'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
-    ),
+    'DEFAULT_AUTHENTICATION_CLASSES': [],   # No DRF auth — we decode JWT manually
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',  # Per-view permissions handle access control
+    ],
 }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────

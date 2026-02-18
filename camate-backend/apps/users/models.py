@@ -6,7 +6,7 @@ class Customer(models.Model):
     Model representing a Customer (client of a CA) in the tenant-specific database.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    username = models.CharField(max_length=100, unique=True)
+    username = models.CharField(max_length=100)  # unique per CA firm, enforced in serializer
     email = models.EmailField(blank=True)
     password_hash = models.CharField(max_length=255)
     full_name = models.CharField(max_length=255)

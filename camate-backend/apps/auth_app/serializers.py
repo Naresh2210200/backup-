@@ -55,8 +55,11 @@ class CustomerRegistrationSerializer(serializers.ModelSerializer):
         fields = ['username', 'email', 'password', 'full_name', 'firm_name', 'gstin', 'address', 'phone', 'ca_code']
 
     def validate_ca_code(self, value):
-        if not CAFirm.objects.filter(ca_code=value).exists():
-            raise serializers.ValidationError("Invalid CA Code.")
+        value = value.upper().strip()
+        if not CAFirm.objects.filter(ca_code__iexact=value).exists():
+            raise serializers.ValidationError(
+                f"CA Code '{value}' not found. Please check the code given by your CA."
+            )
         return value
 
     def validate_gstin(self, value):
