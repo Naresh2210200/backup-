@@ -71,9 +71,10 @@ async def generate_gstr1(payload: GenerateRequest):
         logger.error(f"Excel generation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Excel generation failed: {str(e)}")
 
-    # 3. Upload to R2
-    timestamp = int(time.time())
-    file_name = f"GSTR1_{payload.ca_code}_{payload.customer_id}_{payload.financial_year}_{payload.month}_{timestamp}.xlsx"
+    # 3. Upload to R2 (or local storage)
+    from datetime import datetime
+    timestamp_str = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    file_name = f"GSTR1_standard_{timestamp_str}.xlsx"
     output_key = f"outputs/{payload.ca_code}/{payload.customer_id}/{payload.financial_year}/{payload.month}/{file_name}"
 
     try:

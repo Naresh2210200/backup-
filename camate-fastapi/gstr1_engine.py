@@ -1,265 +1,526 @@
 """
 GSTR1 Excel Generation Engine
 ==============================
-Core logic for generating the GSTR1 Excel workbook from CSV data.
-This mirrors the frontend gstr1Processor.ts logic but runs server-side
-with access to the full Excel template from R2.
-
-Returns: (excel_bytes: bytes, sheets_processed: int)
+Backend implementation of the frontend GSTR1 CSV processor logic.
+Supports Standard & Tally formats, uses the provided Excel template.
 """
 import io
 import csv
 import logging
-from typing import List, Dict, Any
+import re
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+
+try:
+    import openpyxl
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    raise RuntimeError("openpyxl is required. Install with: pip install openpyxl")
 
 logger = logging.getLogger(__name__)
 
-# ─── Standard GSTR1 column mappings (mirrors frontend gstr1Processor.ts) ─────
-COLUMN_MAPPINGS: Dict[str, Dict[str, str]] = {
-    "b2b": {
-        "GSTIN/UIN of Recipient": "GSTIN/UIN of Recipient",
-        "Receiver Name": "Receiver Name",
-        "Invoice Number": "Invoice Number",
-        "Invoice date": "Invoice date",
-        "Invoice Value": "Invoice Value",
-        "Place Of Supply": "Place Of Supply",
-        "Reverse Charge": "Reverse Charge",
-        "Applicable % of Tax Rate": "Applicable % of Tax Rate",
-        "Invoice Type": "Invoice Type",
-        "E-Commerce GSTIN": "E-Commerce GSTIN",
-        "Rate": "Rate",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Central Tax Amount": "Central Tax Amount",
-        "State/UT Tax Amount": "State/UT Tax Amount",
-        "Cess Amount": "Cess Amount",
+# ─── Mappings (Using Standard for now as requested) ───────────────────────────
+STANDARD_MAPPINGS: Dict[str, Dict[str, str]] = {
+    'b2b': {
+        'GSTIN/UIN': 'GSTIN/UIN of Recipient',
+        'Invoice No': 'Invoice Number',
+        'Date of Invoice': 'Invoice date',
+        'Invoice Value': 'Invoice Value',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value',
+        'CESS': 'Cess Amount',
+        'Place Of Supply': 'Place Of Supply',
+        'RCM Applicable': 'Reverse Charge',
+        'Invoice Type': 'Invoice Type',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
     },
-    "b2cl": {
-        "Invoice Number": "Invoice Number",
-        "Invoice date": "Invoice date",
-        "Invoice Value": "Invoice Value",
-        "Place Of Supply": "Place Of Supply",
-        "Applicable % of Tax Rate": "Applicable % of Tax Rate",
-        "Rate": "Rate",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Cess Amount": "Cess Amount",
-        "E-Commerce GSTIN": "E-Commerce GSTIN",
+    'b2cl': {
+        'Invoice No': 'Invoice Number',
+        'Date of Invoice': 'Invoice date',
+        'Invoice Value': 'Invoice Value',
+        'Place Of Supply': 'Place Of Supply',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value',
+        'CESS': 'Cess Amount',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
     },
-    "b2cs": {
-        "Type": "Type",
-        "Place Of Supply": "Place Of Supply",
-        "Applicable % of Tax Rate": "Applicable % of Tax Rate",
-        "Rate": "Rate",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Central Tax Amount": "Central Tax Amount",
-        "State/UT Tax Amount": "State/UT Tax Amount",
-        "Cess Amount": "Cess Amount",
-        "E-Commerce GSTIN": "E-Commerce GSTIN",
+    'b2cs': {
+        'Type': 'Type',
+        'Place Of Supply': 'Place Of Supply',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value',
+        'CESS': 'Cess Amount',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
     },
-    "hsn": {
-        "HSN": "HSN",
-        "Description": "Description",
-        "UQC": "UQC",
-        "Total Quantity": "Total Quantity",
-        "Total Value": "Total Value",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Central Tax Amount": "Central Tax Amount",
-        "State/UT Tax Amount": "State/UT Tax Amount",
-        "Cess Amount": "Cess Amount",
+    'export': {
+        'Export Type': 'Export Type',
+        'Invoice No': 'Invoice Number',
+        'Date of Invoice': 'Invoice date',
+        'Invoice Value': 'Invoice Value',
+        'Port Code': 'Port Code',
+        'Shipping Bill No': 'Shipping Bill Number',
+        'Shipping Bill Date': 'Shipping Bill Date',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value'
     },
-    "Nil_exempt_NonGST": {
-        "Description": "Description",
-        "Nil Rated Supplies": "Nil Rated Supplies",
-        "Exempted (other than nil rated/non GST supply)": "Exempted (other than nil rated/non GST supply)",
-        "Non-GST supplies": "Non-GST Supplies",
+    'Nil_exempt_NonGST': {
+        'Description': 'Description',
+        'Nil Rated Supplies': 'Nil Rated Supplies',
+        'Exempted(other than nil rated/non GST supply)': 'Exempted (other than nil rated/non GST supply)',
+        'Non-GST Supplies': 'Non-GST supplies'
     },
-    "cdnr": {
-        "GSTIN/UIN of Recipient": "GSTIN/UIN of Recipient",
-        "Receiver Name": "Receiver Name",
-        "Note Number": "Note Number",
-        "Note date": "Note date",
-        "Note Type": "Note Type",
-        "Place Of Supply": "Place Of Supply",
-        "Reverse Charge": "Reverse Charge",
-        "Note Supply Type": "Note Supply Type",
-        "Note Value": "Note Value",
-        "Applicable % of Tax Rate": "Applicable % of Tax Rate",
-        "Rate": "Rate",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Central Tax Amount": "Central Tax Amount",
-        "State/UT Tax Amount": "State/UT Tax Amount",
-        "Cess Amount": "Cess Amount",
+    'cdnr': {
+        'GSTIN/UIN': 'GSTIN/UIN of Recipient',
+        'Dr./ Cr. No.': 'Note Number',
+        'Dr./Cr. Date': 'Note date',
+        'Type of note                (Dr/ Cr)': 'Note Type',
+        'Place of supply': 'Place Of Supply',
+        'RCM': 'Reverse Charge',
+        'Invoice Type': 'Note Supply Type',
+        'Dr./Cr. Value': 'Note Value',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value',
+        'CESS': 'Cess Amount'
     },
-    "cdnur": {
-        "UR Type": "UR Type",
-        "Note Number": "Note Number",
-        "Note date": "Note date",
-        "Note Type": "Note Type",
-        "Place Of Supply": "Place Of Supply",
-        "Note Value": "Note Value",
-        "Applicable % of Tax Rate": "Applicable % of Tax Rate",
-        "Rate": "Rate",
-        "Taxable Value": "Taxable Value",
-        "Integrated Tax Amount": "Integrated Tax Amount",
-        "Cess Amount": "Cess Amount",
+    'cdnur': {
+        'Supply Type': 'UR Type',
+        'Dr./ Cr. Note No.': 'Note Number',
+        'Dr./ Cr. Note Date': 'Note date',
+        'Type of note (Dr./ Cr.)': 'Note Type',
+        'Place of supply': 'Place Of Supply',
+        'Dr./Cr. Note Value': 'Note Value',
+        'GST%': 'Rate',
+        'Taxable Value': 'Taxable Value',
+        'CESS': 'Cess Amount'
     },
-    "Docs_issued": {
-        "Nature of Document": "Nature of Document",
-        "Sr.No.From": "Sr.No.From",
-        "Sr.No.To": "Sr.No.To",
-        "Total Number": "Total Number",
-        "Cancelled": "Cancelled",
+    'adv_tax': {
+        'Place Of Supply': 'Place Of Supply',
+        'GST%': 'Rate',
+        'Gross Advance Received': 'Gross Advance Received',
+        'CESS': 'Cess Amount'
     },
+    'adv_tax_adjusted': {
+        'Place Of Supply': 'Place Of Supply',
+        'GST%': 'Rate',
+        'Gross Advance Adjusted': 'Gross Advance Adjusted',
+        'CESS': 'Cess Amount'
+    },
+    'Docs_issued': {
+        'Nature of Document': 'Nature of Document',
+        'Sr. No. From': 'Sr.No.From',
+        'Sr. No. To': 'Sr.No.To',
+        'Total Number': 'Total Number',
+        'Cancelled': 'Cancelled',
+        'Net Issued': 'Net Issued' # Calculated field
+    },
+    'hsn': {
+        'Type': 'Type', # Calculated
+        'HSN': 'HSN',
+        'Description': 'Description',
+        'UQC': 'UQC',
+        'Total Quantity': 'Total Quantity',
+        'Total Value': 'Total Value',
+        'Rate': 'Rate',
+        'Total Taxable Value': 'Taxable Value',
+        'IGST': 'Integrated Tax Amount',
+        'CGST': 'Central Tax Amount',
+        'SGST': 'State/UT Tax Amount',
+        'CESS': 'Cess Amount'
+    }
 }
 
-# Map CSV file name patterns to GSTR1 sheet names
-SHEET_DETECTION: Dict[str, str] = {
-    "b2b": "b2b",
-    "b2cl": "b2cl",
-    "b2cs": "b2cs",
-    "hsn": "hsn",
-    "nil": "Nil_exempt_NonGST",
-    "exempt": "Nil_exempt_NonGST",
-    "cdnr": "cdnr",
-    "cdnur": "cdnur",
-    "docs": "Docs_issued",
-    "document": "Docs_issued",
-}
+# ─── Helper Functions ─────────────────────────────────────────────────────────
 
-
-def detect_sheet(file_name: str) -> str | None:
-    """Detect which GSTR1 sheet a CSV file belongs to based on its name."""
-    name_lower = file_name.lower()
-    for keyword, sheet in SHEET_DETECTION.items():
-        if keyword in name_lower:
-            return sheet
+def get_sheet_name_from_file(file_name: str) -> Optional[str]:
+    upper = file_name.upper()
+    if 'HSN' in upper: return 'hsn'
+    if 'B2B' in upper: return 'b2b'
+    if 'B2CL' in upper: return 'b2cl'
+    if 'B2CS' in upper: return 'b2cs'
+    if 'EXP' in upper: return 'export'
+    if 'EXEMP' in upper: return 'Nil_exempt_NonGST'
+    if 'CDNR' in upper and 'CDNUR' not in upper: return 'cdnr'
+    if 'CDNUR' in upper: return 'cdnur'
+    if 'ATADJ' in upper: return 'adv_tax_adjusted'
+    if 'AT' in upper and 'ATADJ' not in upper: return 'adv_tax'
+    if 'DOC' in upper: return 'Docs_issued'
     return None
 
+def clean_place_of_supply(value: str) -> str:
+    if not value: return ''
+    # Remove leading digits and hyphen, e.g. "33-Tamil Nadu" -> "Tamil Nadu"
+    return re.sub(r'^\d+-\s*', '', str(value)).strip()
 
-def parse_csv(content: str) -> tuple[List[str], List[Dict[str, str]]]:
-    """Parse CSV content into headers and rows."""
-    reader = csv.DictReader(io.StringIO(content))
-    headers = reader.fieldnames or []
-    rows = list(reader)
-    return list(headers), rows
+def parse_date(value: str) -> Any:
+    """Try to parse DD-MMM-YY to DD-MM-YYYY."""
+    if not value: return value
+    # Regex for DD-MMM-YY
+    match = re.search(r'(\d{1,2})-([A-Za-z]{3})-(\d{2})', str(value))
+    if match:
+        day, month_str, year_suffix = match.groups()
+        try:
+            dt = datetime.strptime(f"{day}-{month_str}-{year_suffix}", "%d-%b-%y")
+            return dt.strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    return value
+
+def process_docs_issued(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    processed = []
+    for row in rows:
+        cleaned = {k: v.strip() for k, v in row.items()}
+        total_number = float(cleaned.get('Total Number', 0) or 0)
+        cancelled = float(cleaned.get('Cancelled', 0) or 0)
+        
+        # Handle variations in CSV headers
+        nature = cleaned.get('Nature of Document') or cleaned.get('Type of Document') or ''
+        sr_from = cleaned.get('Sr.No.From') or cleaned.get('Sr. No. From') or cleaned.get('Series From') or ''
+        sr_to = cleaned.get('Sr.No.To') or cleaned.get('Sr. No. To') or cleaned.get('Series To') or ''
+
+        processed.append({
+            'Nature of Document': nature,
+            'Sr.No.From': sr_from,
+            'Sr.No.To': sr_to,
+            'Total Number': total_number,
+            'Cancelled': cancelled,
+            'Net Issued': total_number - cancelled
+        })
+    return processed
+
+def process_hsn_data(rows: List[Dict[str, str]], file_name: str) -> List[Dict[str, Any]]:
+    is_b2b = 'B2B' in file_name.upper()
+    is_b2c = 'B2C' in file_name.upper()
+    
+    processed = []
+    for row in rows:
+        cleaned = {k: v.strip() for k, v in row.items()}
+        if is_b2b: cleaned['Type'] = 'B2B'
+        elif is_b2c: cleaned['Type'] = 'B2C'
+        
+        if not cleaned.get('Rate'):
+            cleaned['Rate'] = 0
+            
+        processed.append(cleaned)
+    return processed
+
+def parse_csv_content(content: str) -> List[Dict[str, str]]:
+    f = io.StringIO(content)
+    # Handle optional BOM
+    if content.startswith('\ufeff'):
+        f = io.StringIO(content[1:])
+    reader = csv.DictReader(f)
+    if not reader.fieldnames:
+        return []
+    return list(reader)
+
+# ─── Excel Updating Functions ─────────────────────────────────────────────────
+
+def update_exempt_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, str]):
+    """
+    Updates the Exempt sheet by matching 'Description' in Column A.
+    mapping_dict: {Excel_Header: CSV_Header} -> Inverted from standard usage above.
+    Wait, STANDARD_MAPPINGS uses Excel_Header: CSV_Header? No.
+    Let's check: 'b2b': {'GSTIN/UIN': 'GSTIN/UIN of Recipient'} -> Key is Excel, Value is CSV?
+    The JS code says:
+    mapping = columnMappings[sheetName]
+    ...
+    for (const [csvCol, excelCol] of Object.entries(columnMapping))
+    
+    In JS:
+    const standardMappings = { 'b2b': { 'GSTIN/UIN of Recipient': 'GSTIN/UIN' } }
+    Key = CSV Header, Value = Excel Header.
+    
+    My Python STANDARD_MAPPINGS above definition:
+    'b2b': { 'GSTIN/UIN': 'GSTIN/UIN of Recipient' } -> I inverted it inadvertently?
+    JS: 'GSTIN/UIN of Recipient': 'GSTIN/UIN'
+    Python above: 'GSTIN/UIN': 'GSTIN/UIN of Recipient' (Excel Header -> CSV Header)
+    
+    I should verify usage.
+    append_data_to_sheet needs to map CSV Data -> Excel Column.
+    Usage: value = row_data.get(csv_col, '')
+    So we need CSV Header to lookup value.
+    The mapping should be used as: excel_header -> csv_header or vice versa.
+    
+    Let's FIX STANDARD_MAPPINGS to match JS exactly: {CSV_Header: Excel_Header}
+    """
+    if not data: return
+
+    # Get description map from template (row index -> description)
+    # Assuming standard template format: Descriptions in Column A
+    template_desc_map = {}
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_col=1, values_only=True), start=2):
+        if row[0]:
+            template_desc_map[str(row[0]).strip()] = row_idx
+
+    # Get header map (column name -> col index)
+    headers = {}
+    for cell in ws[1]:
+        if cell.value:
+            headers[str(cell.value).strip()] = cell.column
+
+    for row_data in data:
+        desc = str(row_data.get('Description', '')).strip()
+        if desc in template_desc_map:
+            row_idx = template_desc_map[desc]
+            
+            # Use mapping: CSV_Key -> Excel_Key
+            for csv_key, excel_key in mapping_dict.items():
+                if excel_key in headers:
+                    col_idx = headers[excel_key]
+                    value = row_data.get(csv_key, '')
+                    
+                    if value == '':
+                        # Keep existing or set to 0? JS sets to 0 if 't'='n'
+                        # We'll just write it
+                        continue
+                        
+                    # Convert to float if possible
+                    try:
+                        clean_val = str(value).replace(',', '')
+                        if clean_val and clean_val.replace('.','',1).isdigit():
+                            ws.cell(row=row_idx, column=col_idx, value=float(clean_val))
+                        else:
+                            ws.cell(row=row_idx, column=col_idx, value=str(value))
+                    except ValueError:
+                        ws.cell(row=row_idx, column=col_idx, value=str(value))
 
 
-def map_row(row: Dict[str, str], sheet_name: str) -> Dict[str, str]:
-    """Map a CSV row's keys to standard GSTR1 column names."""
-    mapping = COLUMN_MAPPINGS.get(sheet_name, {})
-    mapped = {}
-    for src_col, target_col in mapping.items():
-        # Try exact match first, then case-insensitive
-        if src_col in row:
-            mapped[target_col] = row[src_col]
-        else:
-            for k, v in row.items():
-                if k.strip().lower() == src_col.lower():
-                    mapped[target_col] = v
-                    break
-    return mapped
+def append_data_to_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, str]):
+    """
+    Appends data to the sheet based on column mapping.
+    mapping_dict: {CSV_Header: Excel_Header}
+    """
+    if not data: return
+    
+    # 1. Map Headers (Excel Header -> Column Index)
+    # Scan Row 1
+    headers = {}
+    for cell in ws[1]:
+        if cell.value is not None:
+            # Normalize whitespace
+            headers[str(cell.value).strip()] = cell.column
+            
+    # 2. Find Start Row
+    start_row = ws.max_row + 1
+    # Ensure we aren't appending after empty rows
+    for r in range(ws.max_row, 1, -1):
+        # Check if row is empty
+        is_empty = all(ws.cell(row=r, column=c).value is None for c in range(1, ws.max_column + 1))
+        if not is_empty:
+            start_row = r + 1
+            break
+            
+    # 3. Write Data
+    for row_data in data:
+        for csv_key, excel_key in mapping_dict.items():
+            if excel_key in headers:
+                col_idx = headers[excel_key]
+                val = row_data.get(csv_key, '')
+                
+                # Apply transformations
+                if 'Place Of Supply' in excel_key:
+                    val = clean_place_of_supply(val)
+                elif 'Invoice Type' in excel_key:
+                    val = str(val).replace(' B2B', '').replace(' B2C', '').strip()
+                elif excel_key in ['RCM Applicable', 'Reverse Charge']:
+                    if val == 'Y': val = 'Yes'
+                    elif val == 'N': val = 'No'
+                elif 'Date' in excel_key:
+                    val = parse_date(val)
+                
+                # Convert numbers
+                if isinstance(val, str) and val.replace('.','',1).isdigit():
+                    try:
+                        val = float(val)
+                    except ValueError:
+                        pass
+                
+                ws.cell(row=start_row, column=col_idx, value=val)
+        
+        start_row += 1
 
 
 def generate_gstr1_excel(csv_files: List[Dict[str, str]]) -> tuple[bytes, int]:
     """
-    Generate a GSTR1 Excel workbook from a list of CSV files.
-    
-    Args:
-        csv_files: List of {"name": filename, "content": csv_string}
-    
-    Returns:
-        (excel_bytes, sheets_processed_count)
+    Main function to process CSVs and generate GSTR1 Excel.
     """
-    try:
-        import openpyxl
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-    except ImportError:
-        raise RuntimeError("openpyxl is required. Install with: pip install openpyxl")
+    from pathlib import Path
+    template_path = Path(__file__).resolve().parent / "templates" / "GSTR1_Template.xlsx"
 
-    wb = Workbook()
-    wb.remove(wb.active)  # Remove default sheet
-
-    # Style definitions
-    header_font = Font(bold=True, color="FFFFFF", size=10)
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    thin_border = Border(
-        left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
-    )
+    if template_path.exists():
+        logger.info(f"Using template: {template_path}")
+        wb = load_workbook(template_path)
+    else:
+        # Fallback if no template (should not happen based on user request)
+        print("WARNING: Template not found at", template_path)
+        wb = Workbook()
 
     sheets_processed = 0
 
     for csv_file in csv_files:
         file_name = csv_file["name"]
         content = csv_file["content"]
-
-        sheet_name = detect_sheet(file_name)
+        
+        sheet_name = get_sheet_name_from_file(file_name)
         if not sheet_name:
-            logger.warning(f"Could not detect sheet for file: {file_name}, skipping.")
+            # Try looser match?
+            logger.warning(f"Skipping {file_name} - Unknown sheet type")
             continue
-
+            
         try:
-            headers, rows = parse_csv(content)
+            raw_rows = parse_csv_content(content)
         except Exception as e:
-            logger.error(f"Failed to parse {file_name}: {e}")
+            logger.error(f"Error parsing {file_name}: {e}")
             continue
 
-        if not rows:
-            logger.info(f"No data rows in {file_name}, skipping.")
+        if not raw_rows:
             continue
 
-        # Create or get sheet
-        if sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            start_row = ws.max_row + 1
+        # Pre-process rows
+        if sheet_name == 'Docs_issued':
+            rows = process_docs_issued(raw_rows)
+        elif sheet_name == 'hsn':
+            rows = process_hsn_data(raw_rows, file_name)
         else:
-            ws = wb.create_sheet(title=sheet_name)
-            start_row = 1
+            rows = [{k: v.strip() for k, v in row.items()} for row in raw_rows]
 
-        # Get target columns for this sheet
-        target_columns = list(COLUMN_MAPPINGS.get(sheet_name, {}).values())
+        # Get Worksheet
+        if sheet_name not in wb.sheetnames:
+            logger.warning(f"Sheet {sheet_name} missing in template. Creating new.")
+            ws = wb.create_sheet(sheet_name)
+            # Add headers? 
+        else:
+            ws = wb[sheet_name]
 
-        # Write header row (only for new sheets)
-        if start_row == 1:
-            for col_idx, col_name in enumerate(target_columns, start=1):
-                cell = ws.cell(row=1, column=col_idx, value=col_name)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_alignment
-                cell.border = thin_border
-            ws.row_dimensions[1].height = 30
-            start_row = 2
-
-        # Write data rows
-        for row_data in rows:
-            mapped = map_row(row_data, sheet_name)
-            for col_idx, col_name in enumerate(target_columns, start=1):
-                value = mapped.get(col_name, '')
-                cell = ws.cell(row=start_row, column=col_idx, value=value)
-                cell.border = thin_border
-                cell.alignment = Alignment(vertical="center")
-            start_row += 1
-
-        # Auto-fit column widths
-        for col_idx, col_name in enumerate(target_columns, start=1):
-            col_letter = get_column_letter(col_idx)
-            max_len = max(len(str(col_name)), 12)
-            ws.column_dimensions[col_letter].width = min(max_len + 2, 30)
-
+        # Get Mapping
+        mapping = STANDARD_MAPPINGS.get(sheet_name, {})
+        
+        # Invert Mapping above if I used Excel:CSV.
+        # Let's fix STANDARD_MAPPINGS to be CSV:Excel as per JS logic.
+        # JS: 'GSTIN/UIN of Recipient': 'GSTIN/UIN' (CSV -> Excel)
+        # My STANDARD_MAPPINGS below should match this structure.
+        
+        if sheet_name == 'Nil_exempt_NonGST':
+            update_exempt_sheet(ws, rows, mapping)
+        else:
+            append_data_to_sheet(ws, rows, mapping)
+            
         sheets_processed += 1
-        logger.info(f"Processed sheet '{sheet_name}' from '{file_name}' ({len(rows)} rows)")
+        logger.info(f"Processed {file_name} -> {sheet_name} ({len(rows)} rows)")
 
-    if sheets_processed == 0:
-        raise ValueError("No valid GSTR1 sheets could be generated from the provided files.")
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue(), sheets_processed
 
-    # Save to bytes
-    output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue(), sheets_processed
+# ─── Corrected Mappings (CSV Header -> Excel Header) ──────────────────────────
+# Re-declaring here to ensure correctness before main logic uses it.
+STANDARD_MAPPINGS = {
+    'b2b': {
+        'GSTIN/UIN of Recipient': 'GSTIN/UIN',
+        'Invoice Number': 'Invoice No',
+        'Invoice date': 'Date of Invoice',
+        'Invoice Value': 'Invoice Value',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value',
+        'Cess Amount': 'CESS',
+        'Place Of Supply': 'Place Of Supply',
+        'Reverse Charge': 'RCM Applicable',
+        'Invoice Type': 'Invoice Type',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
+    },
+    'b2cl': {
+        'Invoice Number': 'Invoice No',
+        'Invoice date': 'Date of Invoice',
+        'Invoice Value': 'Invoice Value',
+        'Place Of Supply': 'Place Of Supply',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value',
+        'Cess Amount': 'CESS',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
+    },
+    'b2cs': {
+        'Type': 'Type',
+        'Place Of Supply': 'Place Of Supply',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value',
+        'Cess Amount': 'CESS',
+        'E-Commerce GSTIN': 'E-Commerce GSTIN'
+    },
+    'export': {
+        'Export Type': 'Export Type',
+        'Invoice Number': 'Invoice No',
+        'Invoice date': 'Date of Invoice',
+        'Invoice Value': 'Invoice Value',
+        'Port Code': 'Port Code',
+        'Shipping Bill Number': 'Shipping Bill No',
+        'Shipping Bill Date': 'Shipping Bill Date',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value'
+    },
+    'Nil_exempt_NonGST': {
+        'Description': 'Description',
+        'Nil Rated Supplies': 'Nil Rated Supplies',
+        'Exempted (other than nil rated/non GST supply)': 'Exempted(other than nil rated/non GST supply)',
+        'Non-GST supplies': 'Non-GST Supplies'
+    },
+    'cdnr': {
+        'GSTIN/UIN of Recipient': 'GSTIN/UIN',
+        'Note Number': 'Dr./ Cr. No.',
+        'Note Date': 'Dr./Cr. Date',
+        'Note Type': 'Type of note                (Dr/ Cr)',
+        'Place Of Supply': 'Place of supply',
+        'Reverse Charge': 'RCM',
+        'Note Supply Type': 'Invoice Type',
+        'Note Value': 'Dr./Cr. Value',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value',
+        'Cess Amount': 'CESS'
+    },
+    'cdnur': {
+        'UR Type': 'Supply Type',
+        'Note/Refund Voucher Number': 'Dr./ Cr. Note No.',
+        'Note/Refund Voucher date': 'Dr./ Cr. Note Date',
+        'Document Type': 'Type of note (Dr./ Cr.)',
+        'Place Of Supply': 'Place of supply',
+        'Note/Refund Voucher Value': 'Dr./Cr. Note Value',
+        'Rate': 'GST%',
+        'Taxable Value': 'Taxable Value',
+        'Cess Amount': 'CESS'
+    },
+    'adv_tax': {
+        'Place Of Supply': 'Place Of Supply',
+        'Rate': 'GST%',
+        'Gross Advance Received': 'Gross Advance Received',
+        'Cess Amount': 'CESS'
+    },
+    'adv_tax_adjusted': {
+        'Place Of Supply': 'Place Of Supply',
+        'Rate': 'GST%',
+        'Gross Advance Adjusted': 'Gross Advance Adjusted',
+        'Cess Amount': 'CESS'
+    },
+    'Docs_issued': {
+        'Nature of Document': 'Nature of Document',
+        'Sr.No.From': 'Sr. No. From',
+        'Sr.No.To': 'Sr. No. To',
+        'Total Number': 'Total Number',
+        'Cancelled': 'Cancelled',
+        'Net Issued': 'Net Issued'
+    },
+    'hsn': {
+        'Type': 'Type',
+        'HSN': 'HSN',
+        'Description': 'Description',
+        'UQC': 'UQC',
+        'Total Quantity': 'Total Quantity',
+        'Total Value': 'Total Value',
+        'Rate': 'Rate',
+        'Taxable Value': 'Total Taxable Value',
+        'Integrated Tax Amount': 'IGST',
+        'Central Tax Amount': 'CGST',
+        'State/UT Tax Amount': 'SGST',
+        'Cess Amount': 'CESS'
+    }
+}
