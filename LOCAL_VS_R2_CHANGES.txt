@@ -1,0 +1,57 @@
+# Local Development vs Production (R2) Changes
+# ==========================================================
+
+This document tracks the changes made to enable local file storage for development
+and what needs to be reverted or configured for Production (Cloudflare R2).
+
+## 1. Local Development Changes (Current State)
+----------------------------------------------------------
+We modified the system to bypass Cloudflare R2 and use the local filesystem.
+
+### Backend (Django & FastAPI)
+- **Local Storage Path:** `camate-backend/local_storage/`
+- **Django Uploads:**
+  - `apps/uploads/views.py`: `PresignUploadView` now returns `local_mode=True` and a local URL (`http://localhost:8000/api/uploads/local-upload/`).
+  - Added `LocalUploadView` to save files to disk.
+  - `camate/urls.py`: Added static file serving for `media/` when `DEBUG=True`.
+- **FastAPI Engine:**
+  - `storage.py`: Rewritten to read/write from `../camate-backend/local_storage` using `pathlib` instead of `boto3`.
+  - `gstr1_engine.py`: Loads `templates/GSTR1_Template.xlsx` from the local filesystem.
+
+### Frontend (React)
+- **`services/api.ts`**:
+  - `getPresignedUploadUrl`: Checks for `local_mode` flag.
+  - `uploadFile`: If `local_mode` is true, performs a `POST` request to Django instead of `PUT` to R2.
+
+---
+
+## 2. Changes Required for Production (R2 Cloud)
+----------------------------------------------------------
+When deploying to production, apply the following changes:
+
+### Backend Configuration
+1. **Environment Variables:**
+   - Set `DEBUG=False`
+   - Configure `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`.
+   
+2. **Revert Storage Logic (or use an Interface):**
+   - **FastAPI:** Restore `camate-fastapi/storage.py` to use `boto3` (S3 client).
+   - **Django:** Ensure `apps/uploads/views.py` `PresignUploadView` returns valid R2 presigned URLs (remove or toggle off `local_mode`).
+
+3. **Template Management:**
+   - The excel template `GSTR1_Template.xlsx` should be:
+     - **Option A (Recommended):** Included in the Docker image at a known path (e.g., `/app/templates/`).
+     - **Option B:** Uploaded to R2 and downloaded by the engine on startup.
+
+### Frontend
+- No code changes required *if* the backend logic is toggled correctly.
+- If `local_mode` is omitted from the API response, the frontend `uploadFile` function will automatically fallback to the R2 `PUT` method.
+
+### Cloudflare R2 Setup
+- **CORS Policy:** Ensure the R2 bucket allows `PUT` requests from your production domain (e.g., `https://app.camate.in`).
+- **Bucket Structure:** Ensure folders like `uploads/` and `outputs/` are accessible.
+
+---
+**Summary:**
+The codebase currently uses **Local Storage**.
+To go production, you must **enable the R2 Storage drivers** in both Django and FastAPI.
