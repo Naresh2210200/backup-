@@ -16,7 +16,6 @@ def _abs(storage_key: str) -> Path:
     p = STORAGE_ROOT / storage_key
     # Just ensure parent dir exists if we are writing
     return p
-
 def read_file(storage_key: str) -> str:
     """Read a file from local disk as UTF-8 string."""
     path = _abs(storage_key)
@@ -24,6 +23,14 @@ def read_file(storage_key: str) -> str:
         logger.error(f"File not found: {path} (key={storage_key})")
         raise ValueError(f"Cannot read file from storage: {storage_key}")
     return path.read_text(encoding='utf-8')
+
+def read_bytes(storage_key: str) -> bytes:
+    """Read a file from local disk as bytes."""
+    path = _abs(storage_key)
+    if not path.exists():
+        logger.error(f"File not found: {path} (key={storage_key})")
+        raise ValueError(f"Cannot read file from storage: {storage_key}")
+    return path.read_bytes()
 
 def save_file(storage_key: str, content: bytes, content_type: str = 'application/octet-stream') -> str:
     """Save bytes to local disk."""

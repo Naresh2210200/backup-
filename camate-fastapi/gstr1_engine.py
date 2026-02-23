@@ -108,9 +108,9 @@ STANDARD_MAPPINGS: Dict[str, Dict[str, str]] = {
         'CESS': 'Cess Amount'
     },
     'Docs_issued': {
-        'Nature of Document': 'Nature of Document',
-        'Sr. No. From': 'Sr.No.From',
-        'Sr. No. To': 'Sr.No.To',
+        'Nature of Document': ('Nature of Document', 'Type of Document'),
+        'Sr.No.From': ('Sr.No.From', 'Sr. No. From', 'Series From'),
+        'Sr.No.To': ('Sr.No.To', 'Sr. No. To', 'Series To'),
         'Total Number': 'Total Number',
         'Cancelled': 'Cancelled',
         'Net Issued': 'Net Issued' # Calculated field
@@ -217,7 +217,7 @@ def parse_csv_content(content: str) -> List[Dict[str, str]]:
 
 # ─── Excel Updating Functions ─────────────────────────────────────────────────
 
-def update_exempt_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, str]):
+def update_exempt_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, Any]):
     """
     Updates the Exempt sheet by matching 'Description' in Column A.
     mapping_dict: {Excel_Header: CSV_Header} -> Inverted from standard usage above.
@@ -266,10 +266,14 @@ def update_exempt_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, 
             row_idx = template_desc_map[desc]
             
             # Use mapping: CSV_Key -> Excel_Key
-            for csv_key, excel_key in mapping_dict.items():
-                if excel_key in headers:
-                    col_idx = headers[excel_key]
-                    value = row_data.get(csv_key, '')
+            for csv_key, excel_keys in mapping_dict.items():
+                if isinstance(excel_keys, str):
+                    excel_keys = [excel_keys]
+                    
+                for excel_key in excel_keys:
+                    if excel_key in headers:
+                        col_idx = headers[excel_key]
+                        value = row_data.get(csv_key, '')
                     
                     if value == '':
                         # Keep existing or set to 0? JS sets to 0 if 't'='n'
@@ -287,7 +291,7 @@ def update_exempt_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, 
                         ws.cell(row=row_idx, column=col_idx, value=str(value))
 
 
-def append_data_to_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, str]):
+def append_data_to_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str, Any]):
     """
     Appends data to the sheet based on column mapping.
     mapping_dict: {CSV_Header: Excel_Header}
@@ -318,30 +322,36 @@ def append_data_to_sheet(ws, data: List[Dict[str, Any]], mapping_dict: Dict[str,
             
     # 3. Write Data
     for row_data in data:
-        for csv_key, excel_key in mapping_dict.items():
-            if excel_key in headers:
-                col_idx = headers[excel_key]
-                val = row_data.get(csv_key, '')
+        for csv_key, excel_keys in mapping_dict.items():
+            if isinstance(excel_keys, str):
+                excel_keys = [excel_keys]
                 
-                # Apply transformations
-                if 'Place Of Supply' in excel_key:
-                    val = clean_place_of_supply(val)
-                elif 'Invoice Type' in excel_key:
-                    val = str(val).replace(' B2B', '').replace(' B2C', '').strip()
-                elif excel_key in ['RCM Applicable', 'Reverse Charge']:
-                    if val == 'Y': val = 'Yes'
-                    elif val == 'N': val = 'No'
-                elif 'Date' in excel_key:
-                    val = parse_date(val)
+            for excel_key in excel_keys:
+                if excel_key in headers:
+                    col_idx = headers[excel_key]
+                    val = row_data.get(csv_key, '')
                 
-                # Convert numbers
-                if isinstance(val, str) and val.replace('.','',1).isdigit():
-                    try:
-                        val = float(val)
-                    except ValueError:
-                        pass
-                
-                ws.cell(row=start_row, column=col_idx, value=val)
+                    # Apply transformations
+                    if 'Place Of Supply' in excel_key:
+                        val = clean_place_of_supply(val)
+                    elif 'Invoice Type' in excel_key:
+                        val = str(val).replace(' B2B', '').replace(' B2C', '').strip()
+                    elif excel_key in ['RCM Applicable', 'Reverse Charge']:
+                        if val == 'Y': val = 'Yes'
+                        elif val == 'N': val = 'No'
+                    elif 'Date' in excel_key:
+                        val = parse_date(val)
+                    
+                    
+                    # Convert numbers
+                    if isinstance(val, str) and val.replace('.','',1).isdigit():
+                        try:
+                            val = float(val)
+                        except ValueError:
+                            pass
+                    
+                    ws.cell(row=start_row, column=col_idx, value=val)
+                    break  # Stop checking other generic headers if we found a match
         
         start_row += 1
 
@@ -506,9 +516,9 @@ STANDARD_MAPPINGS = {
         'Cess Amount': 'CESS'
     },
     'Docs_issued': {
-        'Nature of Document': 'Nature of Document',
-        'Sr.No.From': 'Sr. No. From',
-        'Sr.No.To': 'Sr. No. To',
+        'Nature of Document': ('Nature of Document', 'Type of Document'),
+        'Sr.No.From': ('Sr. No. From', 'Sr.No.From', 'Series From'),
+        'Sr.No.To': ('Sr. No. To', 'Sr.No.To', 'Series To'),
         'Total Number': 'Total Number',
         'Cancelled': 'Cancelled',
         'Net Issued': 'Net Issued'

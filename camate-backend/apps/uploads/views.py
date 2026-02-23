@@ -7,7 +7,7 @@ from .serializers import (
     UploadListSerializer, MapSheetSerializer
 )
 from apps.users.models import Customer
-from services.r2 import get_upload_presigned_url, STORAGE_ROOT
+from services.r2 import get_upload_presigned_url, get_download_presigned_url, STORAGE_ROOT
 from apps.auth_app.middleware import get_current_user_payload
 import os
 
@@ -147,3 +147,15 @@ class MapSheetView(views.APIView):
             "gstr_sheet": upload.gstr_sheet,
             "updated": True
         }, status=status.HTTP_200_OK)
+
+class DownloadUploadView(views.APIView):
+    """GET /api/uploads/<upload_id>/download/"""
+    permission_classes = [IsCA]
+
+    def get(self, request, upload_id):
+        upload = Upload.objects.filter(id=upload_id).first()
+        if not upload:
+            return Response({"error": "Upload not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        url = get_download_presigned_url(upload.storage_key)
+        return Response({"download_url": url, "file_name": upload.file_name, "expires_in": 300})

@@ -70,3 +70,17 @@ desktop.ini
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 logs/
+
+# ── Project Specific ─────────────────────────────────────────────────────────
+camate-backend/local_storage/
+GST_Outputs/
+*.xlsx
+*.csv
+!templates/GSTR1_Template.xlsx
+STRUCTURE.md
+UPDATE_SUMMARY.md
+TESTING.md
+run_all.bat
+gstr_filing_automation.py
+whitebooks_reconciliation.py
+gst_input.xlsx

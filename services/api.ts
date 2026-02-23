@@ -45,8 +45,8 @@ async function request(endpoint: string, options: RequestInit = {}, isRetry = fa
 
   const response = await fetch(`${BASE_URL}${endpoint}`, { ...options, headers });
 
-  // Auto-refresh on 401
-  if (response.status === 401 && !isRetry) {
+  // Auto-refresh on 401 or 403 from DRF
+  if ((response.status === 401 || response.status === 403) && !isRetry) {
     if (!isRefreshing) {
       isRefreshing = true;
       const newToken = await refreshAccessToken();
@@ -164,6 +164,10 @@ export const api = {
   async getMyUploads(financialYear?: string) {
     const query = financialYear ? `?financial_year=${financialYear}` : '';
     return request(`/api/uploads/my/${query}`);
+  },
+
+  async downloadUpload(uploadId: string) {
+    return request(`/api/uploads/${uploadId}/download/`);
   },
 
   // CA Workspace

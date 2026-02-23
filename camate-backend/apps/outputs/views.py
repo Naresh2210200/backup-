@@ -146,6 +146,7 @@ class TriggerVerificationView(views.APIView):
                 "total_invalid": result.get('total_invalid', 0),
                 "total_moved_to_b2cs": run.total_moved,
                 "status": run.status,
+                "dashboard_data": result.get('dashboard_data', {})
             }
 
             if run.corrected_key:

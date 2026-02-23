@@ -3,6 +3,7 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
 import { getAIGSTRMapping } from '../../services/gemini';
 import { User } from '../../types';
+import { GSTR1Dashboard } from './components/GSTR1Dashboard';
 
 interface PartyWorkspaceProps {
   user: User;
@@ -31,6 +32,7 @@ interface VerificationResult {
   corrected_key?: string;
   error_report_key?: string;
   status: string;
+  dashboard_data?: any; // Added for dashboard data
 }
 
 // ─── Spinner ─────────────────────────────────────────────────────────────────
@@ -88,6 +90,7 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
   const [verificationError, setVerificationError] = useState('');
   const [correctedDownloadUrl, setCorrectedDownloadUrl] = useState('');
   const [errorReportUrl, setErrorReportUrl] = useState('');
+  const [viewingDashboard, setViewingDashboard] = useState(false);
 
   // ── Expanded rows ───────────────────────────────────────────────────────────
   const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
@@ -151,6 +154,28 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
       console.error(e);
     } finally {
       setIsMapping(false);
+    }
+  };
+
+  // ─── Handle Download All (Month) ──────────────────────────────────────────
+  const handleDownloadMonth = async (month: string) => {
+    const files = groupedUploads[month] || [];
+    if (files.length === 0) return;
+
+    for (const f of files) {
+      try {
+        const res = await api.downloadUpload(f.id);
+        const a = document.createElement('a');
+        a.href = res.download_url;
+        a.download = res.file_name || f.file_name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Delay to allow sequential downloads without popup blockers
+        await new Promise(r => setTimeout(r, 600));
+      } catch (err: any) {
+        console.error('Failed to download', f.file_name, err);
+      }
     }
   };
 
@@ -241,6 +266,21 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
     { id: 'GST Logs', label: 'GST Logs' },
   ];
 
+  if (!partyId) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center bg-slate-50 text-slate-400">
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mb-4 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+        </svg>
+        <p className="font-medium text-lg">Select a party from the sidebar to view workspace</p>
+      </div>
+    );
+  }
+
+  if (viewingDashboard && verificationResult?.dashboard_data) {
+    return <GSTR1Dashboard data={verificationResult.dashboard_data} onBack={() => setViewingDashboard(false)} />;
+  }
+
   return (
     <div className="flex h-screen bg-white overflow-hidden">
       {/* Sidebar */}
@@ -254,10 +294,10 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
                 onClick={() => !mod.disabled && setActiveModule(mod.id)}
                 disabled={mod.disabled}
                 className={`w-full text-left px-4 py-3 rounded-lg text-sm font-semibold transition-all flex justify-between items-center ${activeModule === mod.id
-                    ? 'bg-white text-indigo-600 shadow-sm border border-slate-200'
-                    : mod.disabled
-                      ? 'text-slate-300 cursor-not-allowed'
-                      : 'text-slate-600 hover:bg-slate-100'
+                  ? 'bg-white text-indigo-600 shadow-sm border border-slate-200'
+                  : mod.disabled
+                    ? 'text-slate-300 cursor-not-allowed'
+                    : 'text-slate-600 hover:bg-slate-100'
                   }`}>
                 {mod.label}
                 {mod.disabled && (
@@ -318,19 +358,27 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
               ) : (
                 availableMonths.map(monthName => (
                   <div key={monthName} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                    <button
+                    <div
                       onClick={() => setExpandedMonth(expandedMonth === monthName ? null : monthName)}
-                      className="w-full px-6 py-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
+                      className="w-full px-6 py-4 flex justify-between items-center hover:bg-slate-50 transition-colors cursor-pointer select-none">
                       <span className="text-base font-bold text-slate-800">{monthName}</span>
                       <div className="flex items-center gap-3">
                         <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-[10px] font-bold">
                           {groupedUploads[monthName].length} FILES
                         </span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDownloadMonth(monthName); }}
+                          className="bg-emerald-50 text-emerald-600 px-2 py-1 flex items-center gap-1 rounded text-[10px] font-bold hover:bg-emerald-100 transition-colors">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                          DOWNLOAD ALL
+                        </button>
                         <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 text-slate-400 transition-transform ${expandedMonth === monthName ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                           <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
                         </svg>
                       </div>
-                    </button>
+                    </div>
 
                     {expandedMonth === monthName && (
                       <div className="border-t border-slate-100">
@@ -362,12 +410,27 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
                                   </select>
                                 </td>
                                 <td className="px-6 py-4"><StatusBadge status={u.status} /></td>
-                                <td className="px-6 py-4">
+                                <td className="px-6 py-4 flex items-center gap-4">
                                   <button
                                     onClick={() => handleRunAIMapping(u)}
                                     disabled={isMapping && mappingFile?.id === u.id}
                                     className="text-xs text-indigo-600 font-bold hover:underline flex items-center gap-1">
                                     {isMapping && mappingFile?.id === u.id ? <><Spinner /> Analyzing...</> : '✦ AI Analyze'}
+                                  </button>
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        const res = await api.downloadUpload(u.id);
+                                        window.open(res.download_url, '_blank');
+                                      } catch (err: any) {
+                                        alert('Failed to get download link: ' + err.message);
+                                      }
+                                    }}
+                                    className="text-xs text-emerald-600 font-bold hover:underline flex items-center gap-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    Download
                                   </button>
                                 </td>
                               </tr>
@@ -446,8 +509,8 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
                   onClick={handleBulkConvert}
                   disabled={!automationMonth || isProcessing}
                   className={`w-full py-4 rounded-xl font-bold text-lg transition-all ${!automationMonth || isProcessing
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                      : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 active:scale-95'
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 active:scale-95'
                     }`}>
                   {isProcessing ? (
                     <span className="flex items-center justify-center gap-3">
@@ -458,8 +521,8 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
 
                 {processingStatus && !isProcessing && (
                   <div className={`p-4 rounded-xl border text-sm font-medium ${processingStatus.startsWith('✓')
-                      ? 'bg-emerald-50 border-emerald-100 text-emerald-700'
-                      : 'bg-red-50 border-red-100 text-red-600'
+                    ? 'bg-emerald-50 border-emerald-100 text-emerald-700'
+                    : 'bg-red-50 border-red-100 text-red-600'
                     }`}>
                     {processingStatus}
                     {generatedDownloadUrl && (
@@ -498,8 +561,8 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
                   onClick={handleGstrVerify}
                   disabled={!verificationMonth || isVerifying}
                   className={`w-full py-4 rounded-xl font-bold text-lg transition-all ${!verificationMonth || isVerifying
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                      : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 active:scale-95'
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-xl shadow-indigo-100 active:scale-95'
                     }`}>
                   {isVerifying ? (
                     <span className="flex items-center justify-center gap-3"><Spinner /> Verifying GSTINs...</span>
@@ -534,10 +597,18 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
                           ↓ Download Corrected Excel
                         </a>
                       )}
+
+                      {verificationResult?.dashboard_data && Object.keys(verificationResult.dashboard_data).length > 0 && (
+                        <button onClick={() => setViewingDashboard(true)} className="col-span-1 md:col-span-2 flex items-center justify-center gap-2 py-4 px-6 bg-indigo-600 text-white font-bold rounded-2xl shadow-lg hover:bg-indigo-700 transition-all">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" /></svg>
+                          View GSTR-1 Dashboard
+                        </button>
+                      )}
+
                       {errorReportUrl && (
                         <a href={errorReportUrl} download
-                          className="flex items-center justify-center gap-2 py-4 px-6 bg-amber-500 text-white font-bold rounded-2xl shadow-lg hover:bg-amber-600 transition-all">
-                          ↓ Download Error Report (CSV)
+                          className="col-span-1 md:col-span-2 flex items-center justify-center gap-2 py-4 px-6 bg-amber-500 text-white font-bold rounded-2xl shadow-lg hover:bg-amber-600 transition-all">
+                          ↓ Download Extracted Error Report (CSV)
                         </a>
                       )}
                       {!correctedDownloadUrl && !errorReportUrl && (
