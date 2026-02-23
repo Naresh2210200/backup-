@@ -137,6 +137,7 @@ class TriggerVerificationView(views.APIView):
                 total_pan_errors=0,
                 corrected_key=result.get('corrected_key', ''),
                 error_report_key=result.get('error_report_key', ''),
+                json_key=result.get('json_key', ''),
                 status='completed'
             )
 
@@ -153,6 +154,8 @@ class TriggerVerificationView(views.APIView):
                 response_data['corrected_download_url'] = r2.get_download_presigned_url(run.corrected_key)
             if run.error_report_key:
                 response_data['error_report_download_url'] = r2.get_download_presigned_url(run.error_report_key)
+            if run.json_key:
+                response_data['json_download_url'] = r2.get_download_presigned_url(run.json_key)
 
             return Response(response_data, status=status.HTTP_200_OK)
 

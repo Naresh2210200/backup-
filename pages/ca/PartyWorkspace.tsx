@@ -31,6 +31,8 @@ interface VerificationResult {
   total_moved_to_b2cs: number;
   corrected_key?: string;
   error_report_key?: string;
+  json_key?: string;
+  json_download_url?: string;
   status: string;
   dashboard_data?: any; // Added for dashboard data
 }
@@ -90,6 +92,7 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
   const [verificationError, setVerificationError] = useState('');
   const [correctedDownloadUrl, setCorrectedDownloadUrl] = useState('');
   const [errorReportUrl, setErrorReportUrl] = useState('');
+  const [jsonDownloadUrl, setJsonDownloadUrl] = useState('');
   const [viewingDashboard, setViewingDashboard] = useState(false);
 
   // ── Expanded rows ───────────────────────────────────────────────────────────
@@ -243,6 +246,7 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
     setVerificationError('');
     setCorrectedDownloadUrl('');
     setErrorReportUrl('');
+    setJsonDownloadUrl('');
 
     try {
       // Trigger verification via Django → FastAPI
@@ -251,6 +255,7 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
 
       if (result.corrected_download_url) setCorrectedDownloadUrl(result.corrected_download_url);
       if (result.error_report_download_url) setErrorReportUrl(result.error_report_download_url);
+      if (result.json_download_url) setJsonDownloadUrl(result.json_download_url);
     } catch (err: any) {
       setVerificationError(err.message || 'Verification failed.');
     } finally {
@@ -278,7 +283,7 @@ const CAPartyWorkspace: React.FC<PartyWorkspaceProps> = ({ user, onLogout }) => 
   }
 
   if (viewingDashboard && verificationResult?.dashboard_data) {
-    return <GSTR1Dashboard data={verificationResult.dashboard_data} onBack={() => setViewingDashboard(false)} />;
+    return <GSTR1Dashboard data={verificationResult.dashboard_data} onBack={() => setViewingDashboard(false)} jsonUrl={jsonDownloadUrl} />;
   }
 
   return (

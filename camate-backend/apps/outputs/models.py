@@ -48,6 +48,7 @@ class VerificationRun(models.Model):
     total_pan_errors = models.IntegerField(default=0)
     corrected_key = models.TextField(blank=True, help_text="R2 path to corrected GSTR1 file")
     error_report_key = models.TextField(blank=True, help_text="R2 path to error report Excel")
+    json_key = models.TextField(blank=True, help_text="R2 path to GSTR1 JSON file")
     status = models.CharField(max_length=20, default='pending', choices=STATUS_CHOICES)
     run_at = models.DateTimeField(auto_now_add=True)
 

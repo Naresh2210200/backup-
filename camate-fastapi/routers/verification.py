@@ -9,6 +9,7 @@ POST /verification/run
   - Returns run summary & dashboard totals
 """
 import io
+import json
 import re
 import time
 import logging
@@ -19,6 +20,7 @@ from collections import defaultdict
 import difflib
 
 import storage
+from json_engine import generate_gstr1_json
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,6 +64,7 @@ class VerificationRequest(BaseModel):
     customer_id: Optional[str] = None
     financial_year: Optional[str] = None
     month: Optional[str] = None
+    gstin: Optional[str] = None # Added GSTIN to request
 
 class VerificationSummary(BaseModel):
     run_id: str
@@ -70,6 +73,7 @@ class VerificationSummary(BaseModel):
     total_moved_to_b2cs: int
     corrected_key: Optional[str] = None
     error_report_key: Optional[str] = None
+    json_key: Optional[str] = None # Added JSON key
     dashboard_data: Dict[str, Any] = {}
     status: str = "completed"
 
@@ -273,10 +277,14 @@ async def run_verification(payload: VerificationRequest):
         "b2c_taxable": 0.0, "b2c_igst": 0.0, "b2c_cgst": 0.0, "b2c_sgst": 0.0, "b2c_cess": 0.0,
         "hsn_taxable": 0.0, "hsn_igst": 0.0, "hsn_cgst": 0.0, "hsn_sgst": 0.0, "hsn_cess": 0.0,
         "cdnr_taxable": 0.0, "cdnr_igst": 0.0, "cdnr_cgst": 0.0, "cdnr_sgst": 0.0, "cdnr_cess": 0.0,
+        "nil_taxable": 0.0, "nil_igst": 0.0, "nil_cgst": 0.0, "nil_sgst": 0.0, "nil_cess": 0.0,
+        "exp_taxable": 0.0, "exp_igst": 0.0, "exp_cgst": 0.0, "exp_sgst": 0.0, "exp_cess": 0.0,
+        "at_taxable": 0.0, "at_igst": 0.0, "at_cgst": 0.0, "at_sgst": 0.0, "at_cess": 0.0,
+        "atadj_taxable": 0.0, "atadj_igst": 0.0, "atadj_cgst": 0.0, "atadj_sgst": 0.0, "atadj_cess": 0.0,
     }
     
     implicit_taxes_by_pos = defaultdict(float)
-    implicit_cats_by_pos = defaultdict(lambda: {'b2b': 0.0, 'b2c': 0.0, 'cdnr': 0.0})
+    implicit_cats_by_pos = defaultdict(lambda: defaultdict(float))
     
     def sum_sheet(s_name, prefix):
         # FIX: wb.get_sheet_by_name() is deprecated in openpyxl — use wb[s_name] instead
@@ -286,11 +294,20 @@ async def run_verification(payload: VerificationRequest):
         if not ws or ws.max_row <= 1:
             return
         head = [str(cell.value).strip().upper() if cell.value else '' for cell in ws[1]]
-        # Taxable value — exclude 'TOTAL VALUE' but include 'TAXABLE VALUE'
+        
+        # Taxable value — broadened for GSTR1 sheet variations
         tax_c = next((i for i, h in enumerate(head) if 'TAXABLE' in h), None)
         if tax_c is None:
-            # Fallback: use 'TOTAL VALUE' for HSN-like sheets
-            tax_c = next((i for i, h in enumerate(head) if 'TOTAL VALUE' in h), None)
+            # Fallback for Exempted sheet which has multiple "Taxable" columns
+            # 'Nil Rated Supplies', 'Exempted(other than nil rated/non GST supply)', 'Non-GST Supplies'
+            nil_cols = [i for i, h in enumerate(head) if 'NIL RATED' in h or 'EXEMPTED' in h or 'NON-GST' in h]
+            if nil_cols:
+                # We will sum these in the loop
+                tax_c = -1 # Special flag for nil columns
+            else:
+                # Fallback: use 'TOTAL VALUE' for HSN-like sheets
+                tax_c = next((i for i, h in enumerate(head) if 'TOTAL VALUE' in h), None)
+        
         # Tax columns — broadened to match 'CGST AMOUNT', 'IGST AMT', etc.
         i_c = next((i for i, h in enumerate(head) if 'IGST' in h or 'INTEGRATED' in h), None)
         c_c = next((i for i, h in enumerate(head) if 'CGST' in h or 'CENTRAL' in h), None)
@@ -302,7 +319,12 @@ async def run_verification(payload: VerificationRequest):
         pos_c = next((i for i, h in enumerate(head) if 'PLACE OF SUPPLY' in h), None)
         
         for row in ws.iter_rows(min_row=2, values_only=True):
-            tax_v = clean_val(row[tax_c]) if tax_c is not None else 0.0
+            if tax_c == -1: # Sum Nil/Exempted columns
+                nil_cols = [i for i, h in enumerate(head) if 'NIL RATED' in h or 'EXEMPTED' in h or 'NON-GST' in h]
+                tax_v = sum(clean_val(row[i]) for i in nil_cols)
+            else:
+                tax_v = clean_val(row[tax_c]) if tax_c is not None else 0.0
+            
             dash_data[f"{prefix}_taxable"] += tax_v
             
             if cess_c is not None: dash_data[f"{prefix}_cess"] += clean_val(row[cess_c])
@@ -331,6 +353,10 @@ async def run_verification(payload: VerificationRequest):
     sum_sheet('hsn', 'hsn')
     sum_sheet('cdnr', 'cdnr')
     sum_sheet('cdnur', 'cdnr')
+    sum_sheet('Nil_exempt_NonGST', 'nil')
+    sum_sheet('export', 'exp')
+    sum_sheet('adv_tax', 'at')
+    sum_sheet('adv_tax_adjusted', 'atadj')
 
     # Apply Heuristic Distribution for Missing Explicit Taxes:
     if implicit_taxes_by_pos:
@@ -362,12 +388,19 @@ async def run_verification(payload: VerificationRequest):
     base_path = f"outputs/{payload.ca_code}/{payload.customer_id or 'unknown'}"
     corrected_key = f"{base_path}/corrected_{timestamp}.xlsx"
     error_key = f"{base_path}/error_report_{timestamp}.csv"
+    json_key = f"{base_path}/gstr1_{timestamp}.json"
+
+    # Generate GSTR1 JSON
+    fp = f"{(payload.month or '01')}{(payload.financial_year or '2025-26')[:4]}" # Heuristic MMYYYY
+    gstr1_dict = generate_gstr1_json(wb, payload.gstin or "00XXXXX0000X0Z0", fp)
+    gstr1_json_str = json.dumps(gstr1_dict, indent=2)
 
     corrected_buf = io.BytesIO()
     wb.save(corrected_buf)
     storage.save_file(corrected_key, corrected_buf.getvalue(),
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     storage.save_file(error_key, error_csv.encode('utf-8'), 'text/csv')
+    storage.save_file(json_key, gstr1_json_str.encode('utf-8'), 'application/json')
 
     import uuid
     run_id = str(uuid.uuid4())
@@ -379,5 +412,6 @@ async def run_verification(payload: VerificationRequest):
         total_moved_to_b2cs=total_moved,
         corrected_key=corrected_key,
         error_report_key=error_key,
+        json_key=json_key,
         dashboard_data=dash_data
     )
